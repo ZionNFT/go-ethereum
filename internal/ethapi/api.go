@@ -1087,6 +1087,69 @@ func DoCall(ctx context.Context, b Backend, args TransactionArgs, blockNrOrHash 
 	return doCall(ctx, b, args, state, header, overrides, blockOverrides, timeout, globalGasCap)
 }
 
+func doCallMany(ctx context.Context, b Backend, argsSlice []TransactionArgs, state *state.StateDB, header *types.Header, overrides *StateOverride, blockOverrides *BlockOverrides, timeout time.Duration, globalGasCap uint64) ([]*core.ExecutionResult, error) {
+	results := make([]*core.ExecutionResult, len(argsSlice))
+
+	for i, args := range argsSlice {
+		if err := overrides.Apply(state); err != nil {
+			return nil, err
+		}
+
+		var cancel context.CancelFunc
+		if timeout > 0 {
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+		} else {
+			ctx, cancel = context.WithCancel(ctx)
+		}
+		defer cancel()
+
+		msg, err := args.ToMessage(globalGasCap, header.BaseFee)
+		if err != nil {
+			return nil, err
+		}
+		blockCtx := core.NewEVMBlockContext(header, NewChainContext(ctx, b), nil)
+		if blockOverrides != nil {
+			blockOverrides.Apply(&blockCtx)
+		}
+		evm, vmError := b.GetEVM(ctx, msg, state, header, &vm.Config{NoBaseFee: true}, &blockCtx)
+
+		go func() {
+			<-ctx.Done()
+			evm.Cancel()
+		}()
+
+		gp := new(core.GasPool).AddGas(math.MaxUint64)
+		result, err := core.ApplyMessage(evm, msg, gp)
+		if err := vmError(); err != nil {
+			return nil, err
+		}
+
+		if evm.Cancelled() {
+			return nil, fmt.Errorf("execution aborted (timeout = %v)", timeout)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("err: %w (supplied gas %d)", err, msg.GasLimit)
+		}
+
+		results[i] = result
+	}
+
+	return results, nil
+}
+
+
+func DoCallMany(ctx context.Context, b Backend, args[] TransactionArgs, blockNrOrHash rpc.BlockNumberOrHash, overrides *StateOverride, blockOverrides *BlockOverrides, timeout time.Duration, globalGasCap uint64) ([]*core.ExecutionResult, error) {
+	defer func(start time.Time) { log.Debug("Executing EVM call finished", "runtime", time.Since(start)) }(time.Now())
+
+	state, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
+	if state == nil || err != nil {
+		return nil, err
+	}
+
+	return doCallMany(ctx, b, args, state, header, overrides, blockOverrides, timeout, globalGasCap)
+}
+
+
 func newRevertError(result *core.ExecutionResult) *revertError {
 	reason, errUnpack := abi.UnpackRevert(result.Revert())
 	err := errors.New("execution reverted")
