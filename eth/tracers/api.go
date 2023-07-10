@@ -154,6 +154,7 @@ type TraceConfig struct {
 	Tracer  *string
 	Timeout *string
 	Reexec  *uint64
+	NestedTraceOutput bool // Returns the trace output JSON nested under the trace name key. This allows full Parity compatibility to be achieved.
 	// Config specific to given tracer. Note struct logger
 	// config are historically embedded in main object.
 	TracerConfig json.RawMessage
@@ -918,6 +919,120 @@ func (api *API) TraceCall(ctx context.Context, args ethapi.TransactionArgs, bloc
 		traceConfig = &config.TraceConfig
 	}
 	return api.traceTx(ctx, msg, new(Context), vmctx, statedb, traceConfig)
+}
+
+func getTraceConfigFromTraceCallConfig(config *TraceCallConfig) *TraceConfig {
+	var traceConfig *TraceConfig
+	if config != nil {
+		traceConfig = &TraceConfig{
+			Config:            config.Config,
+			Tracer:            config.Tracer,
+			Timeout:           config.Timeout,
+			Reexec:            config.Reexec,
+			NestedTraceOutput: config.NestedTraceOutput,
+		}
+	}
+	return traceConfig
+}
+
+
+// decorateNestedTraceResponse formats trace results the way Parity does.
+// Docs: https://openethereum.github.io/JSONRPC-trace-module
+// Example:
+/*
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "result": {
+    "output": "0x",
+    "stateDiff": { ... },
+    "trace": [ { ... }, ],
+    "vmTrace": { ... }
+  }
+}
+*/
+func decorateNestedTraceResponse(res interface{}, tracer string) interface{} {
+	out := map[string]interface{}{}
+	if tracer == "callTracerParity" {
+		out["trace"] = res
+	} else if tracer == "stateDiffTracer" {
+		out["stateDiff"] = res
+	} else {
+		return res
+	}
+	return out
+}
+
+func decorateResponse(res interface{}, config *TraceConfig) (interface{}, error) {
+	if config != nil && config.NestedTraceOutput && config.Tracer != nil {
+		return decorateNestedTraceResponse(res, *config.Tracer), nil
+	}
+	return res, nil
+}
+
+// TraceCall lets you trace a given eth_call. It collects the structured logs
+// created during the execution of EVM if the given transaction was added on
+// top of the provided block and returns them as a JSON object.
+func (api *API) TraceCallMany(ctx context.Context, txs []ethapi.TransactionArgs, blockNrOrHash rpc.BlockNumberOrHash, config *TraceCallConfig) (interface{}, error) {
+	// Try to retrieve the specified block
+	var (
+		err   error
+		block *types.Block
+	)
+	if hash, ok := blockNrOrHash.Hash(); ok {
+		block, err = api.blockByHash(ctx, hash)
+	} else if number, ok := blockNrOrHash.Number(); ok {
+		block, err = api.blockByNumber(ctx, number)
+	} else {
+		return nil, errors.New("invalid arguments; neither block nor hash specified")
+	}
+	if err != nil {
+		return nil, err
+	}
+	// try to recompute the state
+	reexec := defaultTraceReexec
+	if config != nil && config.Reexec != nil {
+		reexec = *config.Reexec
+	}
+	statedb, release, err := api.backend.StateAtBlock(ctx, block, reexec, nil, true, false)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	// Apply the customized state rules if required.
+	if config != nil {
+		if err := config.StateOverrides.Apply(statedb); err != nil {
+			return nil, err
+		}
+	}
+
+	traceConfig := getTraceConfigFromTraceCallConfig(config)
+
+	var results = make([]interface{}, len(txs))
+	for idx, args := range txs {
+		// Execute the trace
+		msg, err := args.ToMessage(api.backend.RPCGasCap(), block.BaseFee())
+		if err != nil {
+			results[idx] = &txTraceResult{Error: err.Error()}
+			continue
+		}
+		vmctx := core.NewEVMBlockContext(block.Header(), api.chainContext(ctx), nil)
+
+		res, err := api.traceTx(ctx, msg, new(Context), vmctx, statedb, traceConfig)
+		if err != nil {
+			results[idx] = &txTraceResult{Error: err.Error()}
+			continue
+		}
+
+		res, err = decorateResponse(res, traceConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decorate response for transaction at index %d with error %v", idx, err)
+		}
+		results[idx] = res
+	}
+
+	return results, nil
 }
 
 // traceTx configures a new tracer according to the provided configuration, and

@@ -1075,6 +1075,7 @@ func doCall(ctx context.Context, b Backend, args TransactionArgs, state *state.S
 	return result, nil
 }
 
+
 func DoCall(ctx context.Context, b Backend, args TransactionArgs, blockNrOrHash rpc.BlockNumberOrHash, overrides *StateOverride, blockOverrides *BlockOverrides, timeout time.Duration, globalGasCap uint64) (*core.ExecutionResult, error) {
 	defer func(start time.Time) { log.Debug("Executing EVM call finished", "runtime", time.Since(start)) }(time.Now())
 
@@ -1133,6 +1134,88 @@ func (s *BlockChainAPI) Call(ctx context.Context, args TransactionArgs, blockNrO
 	}
 	return result.Return(), result.Err
 }
+
+
+func DoCallBundle(ctx context.Context, b Backend, args TransactionArgsBundle, blockNrOrHash rpc.BlockNumberOrHash, overrides *StateOverride, blockOverrides *BlockOverrides, timeout time.Duration, globalGasCap uint64) ([]*core.ExecutionResult, error) {
+	defer func(start time.Time) { log.Debug("Executing EVM call finished", "runtime", time.Since(start)) }(time.Now())
+
+	state, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
+	if state == nil || err != nil {
+		return nil, err
+	}
+
+	if err := overrides.Apply(state); err != nil {
+		return nil, err
+	}
+	// Setup context so it may be cancelled the call has completed
+	// or, in case of unmetered gas, setup a context with a timeout.
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+	} else {
+		ctx, cancel = context.WithCancel(ctx)
+	}
+	// Make sure the context is cancelled when the call has completed
+	// this makes sure resources are cleaned up.
+	defer cancel()
+
+	var results []*core.ExecutionResult
+
+	// iterate over the bundle of transactions
+	for _, args := range args.Transactions {
+		// Get a new instance of the EVM.
+		msg, err := args.ToMessage(globalGasCap, header.BaseFee)
+		if err != nil {
+			return nil, err
+		}
+		blockCtx := core.NewEVMBlockContext(header, NewChainContext(ctx, b), nil)
+		if blockOverrides != nil {
+			blockOverrides.Apply(&blockCtx)
+		}
+		evm, vmError := b.GetEVM(ctx, msg, state, header, &vm.Config{NoBaseFee: true}, &blockCtx)
+
+		// Wait for the context to be done and cancel the evm. Even if the
+		// EVM has finished, cancelling may be done (repeatedly)
+		go func() {
+			<-ctx.Done()
+			evm.Cancel()
+		}()
+
+		// Execute the message.
+		gp := new(core.GasPool).AddGas(math.MaxUint64)
+		result, err := core.ApplyMessage(evm, msg, gp)
+		if err := vmError(); err != nil {
+			return nil, err
+		}
+
+		// If the timer caused an abort, return an appropriate error message
+		if evm.Cancelled() {
+			return nil, fmt.Errorf("execution aborted (timeout = %v)", timeout)
+		}
+		if err != nil {
+			return results, fmt.Errorf("err: %w (supplied gas %d)", err, msg.GasLimit)
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func (s *BlockChainAPI) CallBundle(ctx context.Context, args TransactionArgsBundle, blockNrOrHash rpc.BlockNumberOrHash, overrides *StateOverride, blockOverrides *BlockOverrides) ([]hexutil.Bytes, error) {
+	result, err := DoCallBundle(ctx, s.b, args, blockNrOrHash, overrides, blockOverrides, s.b.RPCEVMTimeout(), s.b.RPCGasCap())
+	if err != nil {
+		return nil, err
+	}
+	var returnBytes []hexutil.Bytes
+	
+	for _, r := range result {
+		if len(r.Revert()) > 0 {
+			return nil, newRevertError(r)
+		}
+		returnBytes = append(returnBytes, r.Return())
+	}
+	return returnBytes, nil
+}
+
 
 func DoEstimateGas(ctx context.Context, b Backend, args TransactionArgs, blockNrOrHash rpc.BlockNumberOrHash, gasCap uint64) (hexutil.Uint64, error) {
 	// Binary search the gas requirement, as it may be higher than the amount used

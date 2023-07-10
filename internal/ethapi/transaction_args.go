@@ -55,6 +55,11 @@ type TransactionArgs struct {
 	ChainID    *hexutil.Big      `json:"chainId,omitempty"`
 }
 
+type TransactionArgsBundle struct {
+	Transactions []TransactionArgs `json:"transactions"`
+	BlockNumbers []rpc.BlockNumber `json:"blockNumbers"`
+}
+
 // from retrieves the transaction sender address.
 func (args *TransactionArgs) from() common.Address {
 	if args.From == nil {
