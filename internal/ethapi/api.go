@@ -1199,6 +1199,30 @@ func (s *BlockChainAPI) Call(ctx context.Context, args TransactionArgs, blockNrO
 }
 
 
+func (s *BlockChainAPI) CallMany(ctx context.Context, args []TransactionArgs, blockNrOrHash rpc.BlockNumberOrHash, overrides *StateOverride, blockOverrides *BlockOverrides) ([]hexutil.Bytes, error) {
+	results, err := DoCallMany(ctx, s.b, args, blockNrOrHash, overrides, blockOverrides, s.b.RPCEVMTimeout(), s.b.RPCGasCap())
+	if err != nil {
+		return nil, err
+	}
+
+	// Prepare a slice to hold the return values.
+	var returnBytes []hexutil.Bytes
+
+	for _, result := range results {
+		// If the result contains a revert reason, try to unpack and return it.
+		if len(result.Revert()) > 0 {
+			return nil, newRevertError(result)
+		}
+		returnBytes = append(returnBytes, result.Return())
+		if result.Err != nil {
+			return returnBytes, result.Err
+		}
+	}
+	
+	return returnBytes, nil
+}
+
+
 func DoCallBundle(ctx context.Context, b Backend, args TransactionArgsBundle, blockNrOrHash rpc.BlockNumberOrHash, overrides *StateOverride, blockOverrides *BlockOverrides, timeout time.Duration, globalGasCap uint64) ([]*core.ExecutionResult, error) {
 	defer func(start time.Time) { log.Debug("Executing EVM call finished", "runtime", time.Since(start)) }(time.Now())
 
