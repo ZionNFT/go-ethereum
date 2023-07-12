@@ -1244,7 +1244,9 @@ func (s *BlockChainAPI) CallManyBlocksJz(ctx context.Context, argsArray [][]Tran
 	blockNr := header.Number
  
 
-	for i, args := range argsArray { 
+	for i, args := range argsArray {
+
+		snapshot := state.Snapshot()
 
 		defer func(start time.Time) { log.Debug("Executing EVM call finished", "runtime", time.Since(start)) }(time.Now())
 
@@ -1259,7 +1261,7 @@ func (s *BlockChainAPI) CallManyBlocksJz(ctx context.Context, argsArray [][]Tran
 		// convert advancedBlockNumber to *hexutil.Big
 		var advancedBlockNumberBig *hexutil.Big = (*hexutil.Big)(advancedBlockNumber)
 		
-		log.Info("advancedTime|advancedBlockNumberBig", "advancedTime", advancedTime, "advancedBlockNumberBig", advancedBlockNumberBig)
+		log.Info("advancedTime|advancedBlockNumberBig", "advancedTime", advancedTime, "advancedBlockNumberBig", advancedBlockNumberBig, "i", i)
 
 		var blockOverrides = &BlockOverrides{
 			Number: advancedBlockNumberBig,
@@ -1328,6 +1330,10 @@ func (s *BlockChainAPI) CallManyBlocksJz(ctx context.Context, argsArray [][]Tran
 		}
 
 		returnBlocks = append(returnBlocks, blockResult)
+
+		if (i != 0) {
+			state.RevertToSnapshot(snapshot) 
+		}
 	}
 
 	return returnBlocks, nil
