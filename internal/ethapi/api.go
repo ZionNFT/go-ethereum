@@ -1241,11 +1241,8 @@ func (s *BlockChainAPI) CallManyBlocksJz(ctx context.Context, argsArray [][]Tran
 	// Store current block number
 	state, header, err := s.b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
 
-	blockNr, ok := blockNrOrHash.Number()
-
-	if !ok {
-		return nil, fmt.Errorf("invalid block number or hash: %v", blockNrOrHash)
-	}
+	blockNr := header.Number
+ 
 
 	for i, args := range argsArray { 
 
@@ -1257,8 +1254,15 @@ func (s *BlockChainAPI) CallManyBlocksJz(ctx context.Context, argsArray [][]Tran
 
 		var advancedTime hexutil.Uint64 = hexutil.Uint64(header.Time) + hexutil.Uint64(12 * i)
 
+		// add i to blockNr
+		var advancedBlockNumber *big.Int = new(big.Int).Add(blockNr, big.NewInt(int64(i)))
+		// convert advancedBlockNumber to *hexutil.Big
+		var advancedBlockNumberBig *hexutil.Big = (*hexutil.Big)(advancedBlockNumber)
+		
+		log.Info("advancedTime|advancedBlockNumberBig", "advancedTime", advancedTime, "advancedBlockNumberBig", advancedBlockNumberBig)
+
 		var blockOverrides = &BlockOverrides{
-			Number: (*hexutil.Big)(big.NewInt(blockNr.Int64() + int64(i))),
+			Number: advancedBlockNumberBig,
 			Time:  &advancedTime,
 		};
 
