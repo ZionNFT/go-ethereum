@@ -1138,6 +1138,65 @@ func doCallMany(ctx context.Context, b Backend, argsSlice []TransactionArgs, sta
 }
 
 
+func doCallManyBlocks(ctx context.Context, b Backend, argsSlice []TransactionArgs, state *state.StateDB, header *types.Header, overrides *StateOverride, blockOverrides *BlockOverrides, timeout time.Duration, globalGasCap uint64, dontRevert bool) ([]*core.ExecutionResult, error) {
+	results := make([]*core.ExecutionResult, len(argsSlice))
+
+	var copiedState = state
+	if !dontRevert {
+		copiedState = state.Copy()
+	}
+	
+
+	for i, args := range argsSlice {
+		if err := overrides.Apply(copiedState); err != nil {
+			return nil, err
+		}
+
+		var cancel context.CancelFunc
+		if timeout > 0 {
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+		} else {
+			ctx, cancel = context.WithCancel(ctx)
+		}
+		defer cancel()
+
+		msg, err := args.ToMessage(globalGasCap, header.BaseFee)
+		if err != nil {
+			return nil, err
+		}
+		blockCtx := core.NewEVMBlockContext(header, NewChainContext(ctx, b), nil)
+		if blockOverrides != nil {
+			blockOverrides.Apply(&blockCtx)
+		}
+		evm, vmError := b.GetEVM(ctx, msg, copiedState, header, &vm.Config{NoBaseFee: true}, &blockCtx)
+
+		go func() {
+			<-ctx.Done()
+			evm.Cancel()
+		}()
+
+		gp := new(core.GasPool).AddGas(math.MaxUint64)
+		result, err := core.ApplyMessage(evm, msg, gp)
+
+
+		if err := vmError(); err != nil {
+			return nil, err
+		}
+
+		if evm.Cancelled() {
+			return nil, fmt.Errorf("execution aborted (timeout = %v)", timeout)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("err: %w (supplied gas %d)", err, msg.GasLimit)
+		}
+
+		results[i] = result
+	}
+
+	return results, nil
+}
+
+
 func DoCallMany(ctx context.Context, b Backend, args[] TransactionArgs, blockNrOrHash rpc.BlockNumberOrHash, overrides *StateOverride, blockOverrides *BlockOverrides, timeout time.Duration, globalGasCap uint64) ([]*core.ExecutionResult, error) {
 	defer func(start time.Time) { log.Debug("Executing EVM call finished", "runtime", time.Since(start)) }(time.Now())
 
@@ -1242,7 +1301,8 @@ func (s *BlockChainAPI) CallManyBlocksJz(ctx context.Context, argsArray [][]Tran
 	state, header, err := s.b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
 
 	blockNr := header.Number
- 
+	// var snapshot int
+
 	for i, args := range argsArray {
 
 		defer func(start time.Time) { log.Debug("Executing EVM call finished", "runtime", time.Since(start)) }(time.Now())
@@ -1266,17 +1326,17 @@ func (s *BlockChainAPI) CallManyBlocksJz(ctx context.Context, argsArray [][]Tran
 		};
 
 
-		var snapshot int 
 
-		if (i != 0) {
-			snapshot = state.Snapshot()
-		}
+		// if (snapshot == 0 && i != 0) {
+		// 	snapshot = state.Snapshot()
+		// 	log.Info("Snapshot", snapshot)
+		// }
 
-		results, err := doCallMany(ctx, s.b, args, state, header, overrides, blockOverrides, s.b.RPCEVMTimeout(), s.b.RPCGasCap());
+		results, err := doCallManyBlocks(ctx, s.b, args, state, header, overrides, blockOverrides, s.b.RPCEVMTimeout(), s.b.RPCGasCap(), i == 0);
 
-		if (i != 0) {
-			state.RevertToSnapshot(snapshot) 
-		}
+		// if (i != 0) {
+		// 	state.RevertToSnapshot(snapshot) 
+		// }
 
 		var txnResults []TransactionsResultOrError
 
@@ -1296,7 +1356,7 @@ func (s *BlockChainAPI) CallManyBlocksJz(ctx context.Context, argsArray [][]Tran
 		for resultIdx, result := range results {
 			// log resultIdx 
 			log.Info("resultIdx", "resultIdx", resultIdx)
-			
+
 			var revertReason  *revertError= nil
 			var returnBytes []hexutil.Bytes
 
