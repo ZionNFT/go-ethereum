@@ -473,7 +473,7 @@ func (s *PersonalAccountAPI) SendTransaction(ctx context.Context, args Transacti
 // SignTransaction will create a transaction from the given arguments and
 // tries to sign it with the key associated with args.From. If the given passwd isn't
 // able to decrypt the key it fails. The transaction is returned in RLP-form, not broadcast
-// to other nodes
+// 0x691e140f25dad539c8294e97ec4aed1efb3d7f13
 func (s *PersonalAccountAPI) SignTransaction(ctx context.Context, args TransactionArgs, passwd string) (*SignTransactionResult, error) {
 	// No need to obtain the noncelock mutex, since we won't be sending this
 	// tx into the transaction pool, but right back to the user
@@ -1221,22 +1221,18 @@ func (s *BlockChainAPI) CallMany(ctx context.Context, args []TransactionArgs, bl
 	return returnBytes, nil
 }
 
-type TransactionsCallResult struct {
-	Results     []*core.ExecutionResult
-	Error 	 error
+type TransactionsResultOrError struct {
+	Result   []hexutil.Bytes
+	Error 	 *revertError
 }
 
 type BlockResult struct {
 	BlockNumber rpc.BlockNumber
-	Results     TransactionsCallResult
+	Results     []TransactionsResultOrError
+	Error 	 error
 }
 
-// eth_callManyBlocks executes the given transactions on the state for the given block number.
-/**
-	[enable trading, inference] blockNrOrHash
-	[inference], blockNrOrHash + 1 (set time to blockNrOrHash time + 12)
-	[inference] blockNrOrHash + 2 (set time to blockNrOrHash time + 24)
-*/
+ 
 func (s *BlockChainAPI) CallManyBlocksJz(ctx context.Context, argsArray [][]TransactionArgs, blockNrOrHash rpc.BlockNumberOrHash, overrides *StateOverride) ([]BlockResult, error) {
 
 	// Prepare a slice to hold the return values.
@@ -1266,21 +1262,68 @@ func (s *BlockChainAPI) CallManyBlocksJz(ctx context.Context, argsArray [][]Tran
 			Time:  &advancedTime,
 		};
 
-		result, err := doCallMany(ctx, s.b, args, state, header, overrides, blockOverrides, s.b.RPCEVMTimeout(), s.b.RPCGasCap())
+		results, err := doCallMany(ctx, s.b, args, state, header, overrides, blockOverrides, s.b.RPCEVMTimeout(), s.b.RPCGasCap());
 
-		// Create TransactionsCallResult	
+		var txnResults []TransactionsResultOrError
 
-		var transactionsCallResult TransactionsCallResult = TransactionsCallResult{
-			Results: result,
-			Error: err,
+		// log results
+		log.Info("CallManyBlocksJz", "blockNr", blockOverrides.Number, "time", blockOverrides.Time, "results", results, "err", err)
+
+		if err != nil {
+			var blockResult BlockResult = BlockResult{
+				BlockNumber: rpc.BlockNumber(blockNr.Int64() + int64(i)),
+				Error: err,
+			}
+	
+			returnBlocks = append(returnBlocks, blockResult)
+			continue
 		}
 		
-		var blockResult BlockResult = BlockResult{
-			BlockNumber: rpc.BlockNumber(blockNr.Int64() + int64(i)),
-			Results: transactionsCallResult,
+		for resultIdx, result := range results {
+			// log resultIdx 
+			log.Info("resultIdx", "resultIdx", resultIdx)
+			
+			var revertReason  *revertError= nil
+			var returnBytes []hexutil.Bytes
+
+			if len(result.Revert()) > 0 {
+				log.Info("detecting revert reason")
+				revertReason = newRevertError(result)
+			}
+
+			if result.Err != nil {
+				log.Info("detected error")
+				var blockResult BlockResult = BlockResult{
+					BlockNumber: rpc.BlockNumber(blockNr.Int64() + int64(i)),
+					Error: result.Err,
+				}
+		
+				returnBlocks = append(returnBlocks, blockResult)
+				continue
+			}
+
+			retVal := result.Return()
+			log.Info("parsed result", "retVal", returnBytes, "revertReason", revertReason)
+
+			returnBytes = append(returnBytes, retVal)
+
+			log.Info("A", "returnBytes", returnBytes, "revertReason", revertReason)
+
+			var transactionsCallResult TransactionsResultOrError = TransactionsResultOrError{
+				Result: returnBytes,
+				// only dereference Error if not nil
+				Error: revertReason,				
+			}
+
+			txnResults = append(txnResults, transactionsCallResult)			
 		}
 
-		returnBlocks = append(returnBlocks, blockResult)  
+		var blockResult BlockResult = BlockResult{
+			BlockNumber: rpc.BlockNumber(blockNr.Int64() + int64(i)),
+			Results: txnResults,
+		}
+
+		returnBlocks = append(returnBlocks, blockResult)
 	}
 
 	return returnBlocks, nil
