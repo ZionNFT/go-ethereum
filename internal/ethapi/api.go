@@ -1198,7 +1198,6 @@ func (s *BlockChainAPI) Call(ctx context.Context, args TransactionArgs, blockNrO
 	return result.Return(), result.Err
 }
 
-
 func (s *BlockChainAPI) CallMany(ctx context.Context, args []TransactionArgs, blockNrOrHash rpc.BlockNumberOrHash, overrides *StateOverride, blockOverrides *BlockOverrides) ([]hexutil.Bytes, error) {
 	results, err := DoCallMany(ctx, s.b, args, blockNrOrHash, overrides, blockOverrides, s.b.RPCEVMTimeout(), s.b.RPCGasCap())
 	if err != nil {
@@ -1220,6 +1219,71 @@ func (s *BlockChainAPI) CallMany(ctx context.Context, args []TransactionArgs, bl
 	}
 	
 	return returnBytes, nil
+}
+
+type TransactionsCallResult struct {
+	Results     []*core.ExecutionResult
+	Error 	 error
+}
+
+type BlockResult struct {
+	BlockNumber rpc.BlockNumber
+	Results     TransactionsCallResult
+}
+
+// eth_callManyBlocks executes the given transactions on the state for the given block number.
+/**
+	[enable trading, inference] blockNrOrHash
+	[inference], blockNrOrHash + 1 (set time to blockNrOrHash time + 12)
+	[inference] blockNrOrHash + 2 (set time to blockNrOrHash time + 24)
+*/
+func (s *BlockChainAPI) CallManyBlocksJz(ctx context.Context, argsArray [][]TransactionArgs, blockNrOrHash rpc.BlockNumberOrHash, overrides *StateOverride) ([]BlockResult, error) {
+
+	// Prepare a slice to hold the return values.
+	var returnBlocks []BlockResult
+
+	// Store current block number
+	state, header, err := s.b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
+
+	blockNr, ok := blockNrOrHash.Number()
+
+	if !ok {
+		return nil, fmt.Errorf("invalid block number or hash: %v", blockNrOrHash)
+	}
+
+	for i, args := range argsArray { 
+
+		defer func(start time.Time) { log.Debug("Executing EVM call finished", "runtime", time.Since(start)) }(time.Now())
+
+		if state == nil || err != nil {
+			return nil, err
+		}
+
+		var advancedTime hexutil.Uint64 = hexutil.Uint64(header.Time) + hexutil.Uint64(12 * i)
+
+		var blockOverrides = &BlockOverrides{
+			Number: (*hexutil.Big)(big.NewInt(blockNr.Int64() + int64(i))),
+			Time:  &advancedTime,
+		};
+
+		result, err := doCallMany(ctx, s.b, args, state, header, overrides, blockOverrides, s.b.RPCEVMTimeout(), s.b.RPCGasCap())
+
+		// Create TransactionsCallResult	
+
+		var transactionsCallResult TransactionsCallResult = TransactionsCallResult{
+			Results: result,
+			Error: err,
+		}
+		
+		var blockResult BlockResult = BlockResult{
+			BlockNumber: rpc.BlockNumber(blockNr.Int64() + int64(i)),
+			Results: transactionsCallResult,
+		}
+
+		returnBlocks = append(returnBlocks, blockResult)  
+	}
+
+	return returnBlocks, nil
 }
 
 
@@ -1302,7 +1366,6 @@ func (s *BlockChainAPI) CallBundle(ctx context.Context, args TransactionArgsBund
 	}
 	return returnBytes, nil
 }
-
 
 func DoEstimateGas(ctx context.Context, b Backend, args TransactionArgs, blockNrOrHash rpc.BlockNumberOrHash, gasCap uint64) (hexutil.Uint64, error) {
 	// Binary search the gas requirement, as it may be higher than the amount used
