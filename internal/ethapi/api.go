@@ -1089,7 +1089,7 @@ func DoCall(ctx context.Context, b Backend, args TransactionArgs, blockNrOrHash 
 
 func doCallMany(ctx context.Context, b Backend, argsSlice []TransactionArgs, state *state.StateDB, header *types.Header, overrides *StateOverride, blockOverrides *BlockOverrides, timeout time.Duration, globalGasCap uint64) ([]*core.ExecutionResult, error) {
 	results := make([]*core.ExecutionResult, len(argsSlice))
-
+	snapshot := state.Snapshot()
 	for i, args := range argsSlice {
 		if err := overrides.Apply(state); err != nil {
 			return nil, err
@@ -1133,6 +1133,7 @@ func doCallMany(ctx context.Context, b Backend, argsSlice []TransactionArgs, sta
 
 		results[i] = result
 	}
+	state.RevertToSnapshot(snapshot)
 
 	return results, nil
 }
@@ -1229,7 +1230,7 @@ type TransactionsResultOrError struct {
 type BlockResult struct {
 	BlockNumber rpc.BlockNumber
 	Results     []TransactionsResultOrError
-	Error 	 error
+	Error 	 string
 }
 
  
@@ -1281,7 +1282,7 @@ func (s *BlockChainAPI) CallManyBlocksJz(ctx context.Context, argsArray [][]Tran
 		if err != nil {
 			var blockResult BlockResult = BlockResult{
 				BlockNumber: rpc.BlockNumber(blockNr.Int64() + int64(i)),
-				Error: err,
+				Error: err.Error(),
 			}
 	
 			returnBlocks = append(returnBlocks, blockResult)
@@ -1304,7 +1305,7 @@ func (s *BlockChainAPI) CallManyBlocksJz(ctx context.Context, argsArray [][]Tran
 				log.Info("detected error")
 				var blockResult BlockResult = BlockResult{
 					BlockNumber: rpc.BlockNumber(blockNr.Int64() + int64(i)),
-					Error: result.Err,
+					Error: result.Err.Error(),
 				}
 		
 				returnBlocks = append(returnBlocks, blockResult)
