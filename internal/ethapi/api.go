@@ -1243,10 +1243,13 @@ func (s *BlockChainAPI) CallManyBlocksJz(ctx context.Context, argsArray [][]Tran
 
 	blockNr := header.Number
  
-
 	for i, args := range argsArray {
 
-		snapshot := state.Snapshot()
+		var snapshot int 
+
+		if (i != 0){
+			snapshot = state.Snapshot()
+		}
 
 		defer func(start time.Time) { log.Debug("Executing EVM call finished", "runtime", time.Since(start)) }(time.Now())
 
