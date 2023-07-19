@@ -44,6 +44,9 @@ import (
 	_ "github.com/ethereum/go-ethereum/eth/tracers/js"
 	_ "github.com/ethereum/go-ethereum/eth/tracers/native"
 
+	// Automatically set GOMAXPROCS to match Linux container CPU quota.
+	_ "go.uber.org/automaxprocs"
+
 	"github.com/urfave/cli/v2"
 )
 
@@ -90,9 +93,6 @@ var (
 		utils.LightMaxPeersFlag,
 		utils.LightNoPruneFlag,
 		utils.LightKDFFlag,
-		utils.UltraLightServersFlag,
-		utils.UltraLightFractionFlag,
-		utils.UltraLightOnlyAnnounceFlag,
 		utils.LightNoSyncServeFlag,
 		utils.EthRequiredBlocksFlag,
 		utils.LegacyWhitelistFlag,
@@ -122,7 +122,9 @@ var (
 		utils.MinerNewPayloadTimeout,
 		utils.NATFlag,
 		utils.NoDiscoverFlag,
+		utils.DiscoveryV4Flag,
 		utils.DiscoveryV5Flag,
+		utils.LegacyDiscoveryV5Flag,
 		utils.NetrestrictFlag,
 		utils.NodeKeyFileFlag,
 		utils.NodeKeyHexFlag,
